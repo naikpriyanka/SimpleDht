@@ -10,12 +10,14 @@ import android.view.View;
 import android.view.View.OnClickListener;
 import android.widget.TextView;
 
+import static edu.buffalo.cse.cse486586.simpledht.data.SimpleDhtContract.CONTENT_AUTHORITY;
+import static edu.buffalo.cse.cse486586.simpledht.data.SimpleDhtContract.SimpleDhtEntry.KEY_FIELD;
+import static edu.buffalo.cse.cse486586.simpledht.data.SimpleDhtContract.SimpleDhtEntry.VALUE_FIELD;
+
 public class OnTestClickListener implements OnClickListener {
 
 	private static final String TAG = OnTestClickListener.class.getName();
 	private static final int TEST_CNT = 50;
-	private static final String KEY_FIELD = "key";
-	private static final String VALUE_FIELD = "value";
 
 	private final TextView mTextView;
 	private final ContentResolver mContentResolver;
@@ -25,7 +27,7 @@ public class OnTestClickListener implements OnClickListener {
 	public OnTestClickListener(TextView _tv, ContentResolver _cr) {
 		mTextView = _tv;
 		mContentResolver = _cr;
-		mUri = buildUri("content", "edu.buffalo.cse.cse486586.simpledht.provider");
+		mUri = buildUri("content", CONTENT_AUTHORITY);
 		mContentValues = initTestValues();
 	}
 
