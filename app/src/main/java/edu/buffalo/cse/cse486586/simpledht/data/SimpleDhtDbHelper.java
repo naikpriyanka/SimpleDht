@@ -17,12 +17,12 @@ public class SimpleDhtDbHelper extends SQLiteOpenHelper {
     /*
      * Name of the database file
      */
-    private static final String DATABASE_NAME = "messages.db";
+    private static final String DATABASE_NAME = "simple_dht.db";
 
     /**
      * Database version. If you change the database schema, you must increment the database version.
      */
-    private static final int DATABASE_VERSION = 5;
+    private static final int DATABASE_VERSION = 1;
 
     /**
      * Constructs a new instance of {@link SimpleDhtDbHelper}.

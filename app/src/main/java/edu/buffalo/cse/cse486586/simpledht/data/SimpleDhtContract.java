@@ -20,7 +20,7 @@ public final class SimpleDhtContract {
     public static final class SimpleDhtEntry implements BaseColumns {
 
         /** Name of database table for messages */
-        public final static String TABLE_NAME = "messages";
+        public final static String TABLE_NAME = "simple_dht";
 
         /**
          * Unique ID string for the message. It will be used for retrieving messages

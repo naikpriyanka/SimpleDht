@@ -3,6 +3,7 @@ package edu.buffalo.cse.cse486586.simpledht;
 import android.content.ContentProvider;
 import android.content.ContentUris;
 import android.content.ContentValues;
+import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.net.Uri;
@@ -10,7 +11,9 @@ import android.util.Log;
 
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.Formatter;
+import java.util.List;
 
 import edu.buffalo.cse.cse486586.simpledht.data.SimpleDhtDbHelper;
 
@@ -24,10 +27,46 @@ public class SimpleDhtProvider extends ContentProvider {
 
     private SimpleDhtDbHelper mDbHelper;
 
+    private static final String REMOTE_PORT0 = "11108";
+    private static final String REMOTE_PORT1 = "11112";
+    private static final String REMOTE_PORT2 = "11116";
+    private static final String REMOTE_PORT3 = "11120";
+    private static final String REMOTE_PORT4 = "11124";
+    private static final int SERVER_PORT = 10000;
+
+    private static final List<String> clientPorts = new ArrayList() {{
+        add(REMOTE_PORT0);
+        add(REMOTE_PORT1);
+        add(REMOTE_PORT2);
+        add(REMOTE_PORT3);
+        add(REMOTE_PORT4);
+    }};
+
+    private static final String LEADER_NODE = "5554";
+    private static final String LDUMP = "@";
+    private static final String GDUMP = "*";
+
+    private String pred = null;
+    private String succ = null;
+
     @Override
     public int delete(Uri uri, String selection, String[] selectionArgs) {
         // TODO Auto-generated method stub
-        return 0;
+        int rowsDeleted = 0;
+
+        // Get writeable database
+        SQLiteDatabase database = mDbHelper.getWritableDatabase();
+
+        if (pred == null && succ == null) {
+            if(LDUMP.equals(selection) || GDUMP.equals(selection)) {
+                rowsDeleted = database.delete(TABLE_NAME, null, null);
+            } else {
+                selectionArgs = new String[]{selection};
+                selection = KEY_FIELD + "=?";
+                rowsDeleted = database.delete(TABLE_NAME, selection, selectionArgs);
+            }
+        }
+        return rowsDeleted;
     }
 
     @Override
@@ -60,30 +99,34 @@ public class SimpleDhtProvider extends ContentProvider {
          * Since the table can already have the same key used insertWithOnConflict
          * The existing value for that key will be replaced with new value
          */
-        long id = database.insertWithOnConflict(TABLE_NAME, null, values, SQLiteDatabase.CONFLICT_REPLACE);
+        if (pred == null && succ == null) {
+            long id = database.insertWithOnConflict(TABLE_NAME, null, values, SQLiteDatabase.CONFLICT_REPLACE);
 
-        // If the ID is -1, then the insertion failed. Log an error and return null.
-        if (id == -1) {
-            Log.e(LOG_TAG, "Failed to insert row for " + uri);
-            return null;
+            // If the ID is -1, then the insertion failed. Log an error and return null.
+            if (id == -1) {
+                Log.e(LOG_TAG, "Failed to insert row for " + uri);
+                return null;
+            }
+            // Notify all listeners that the data has changed for the message content URI
+            getContext().getContentResolver().notifyChange(uri, null);
+            // Return the new URI with the ID (of the newly inserted row) appended at the end
+            return ContentUris.withAppendedId(uri, id);
         }
-        // Notify all listeners that the data has changed for the message content URI
-        getContext().getContentResolver().notifyChange(uri, null);
-
-        // Return the new URI with the ID (of the newly inserted row) appended at the end
-        return ContentUris.withAppendedId(uri, id);
+        return null;
     }
 
     @Override
     public boolean onCreate() {
         // TODO Auto-generated method stub
-        mDbHelper = new SimpleDhtDbHelper(getContext());
+        Context context = this.getContext();
+
+        mDbHelper = new SimpleDhtDbHelper(context);
         return true;
     }
 
     @Override
     public Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs,
-            String sortOrder) {
+                        String sortOrder) {
         // TODO Auto-generated method stub
         // Get readable database
         SQLiteDatabase database = mDbHelper.getReadableDatabase();
@@ -94,18 +137,24 @@ public class SimpleDhtProvider extends ContentProvider {
          *
          * Changed the selection to query value containing equal to and question mark
          */
-        selectionArgs = new String[]{selection};
-        selection = KEY_FIELD + "=?";
-
-        /*
-         * This cursor will hold the result of the query
-         *
-         * Query the message table directly with the given projection, selection, selection
-         * arguments, and sort order. The cursor contains single row of the messages table.
-         */
-        Cursor resultCursor = database.query(TABLE_NAME, projection, selection, selectionArgs, null, null, sortOrder);
-        resultCursor.setNotificationUri(getContext().getContentResolver(), uri);
-        Log.v("query", selectionArgs[0]);
+        Cursor resultCursor = null;
+        if (pred == null && succ == null) {
+            if (GDUMP.equals(selection) || LDUMP.equals(selection)) {
+                resultCursor = database.query(TABLE_NAME, null, null, null, null, null, null);
+            } else {
+                /*
+                 * This cursor will hold the result of the query
+                 *
+                 * Query the message table directly with the given projection, selection, selection
+                 * arguments, and sort order. The cursor contains single row of the messages table.
+                 */
+                selectionArgs = new String[]{selection};
+                selection = KEY_FIELD + "=?";
+                resultCursor = database.query(TABLE_NAME, projection, selection, selectionArgs, null, null, sortOrder);
+                resultCursor.setNotificationUri(getContext().getContentResolver(), uri);
+                return resultCursor;
+            }
+        }
         return resultCursor;
     }
 
@@ -124,4 +173,5 @@ public class SimpleDhtProvider extends ContentProvider {
         }
         return formatter.toString();
     }
+
 }
