@@ -69,7 +69,12 @@ public class SimpleDhtProvider extends ContentProvider {
 
     @Override
     public int delete(Uri uri, String selection, String[] selectionArgs) {
-        return 0;
+        // Get writeable database
+        SQLiteDatabase database = mDbHelper.getWritableDatabase();
+        //Code for deletion with the given selection key
+        selectionArgs = new String[]{selection};
+        selection = KEY_FIELD + "=?";
+        return database.delete(TABLE_NAME, selection, selectionArgs);
     }
 
     @Override
