@@ -6,6 +6,7 @@ import android.content.ContentUris;
 import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
+import android.database.MatrixCursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.net.Uri;
 import android.os.AsyncTask;
@@ -23,8 +24,10 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Formatter;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 import edu.buffalo.cse.cse486586.simpledht.data.SimpleDhtDbHelper;
@@ -37,11 +40,11 @@ import static edu.buffalo.cse.cse486586.simpledht.data.SimpleDhtContract.SimpleD
 import static edu.buffalo.cse.cse486586.simpledht.data.SimpleDhtContract.SimpleDhtEntry.TABLE_NAME;
 import static edu.buffalo.cse.cse486586.simpledht.data.SimpleDhtContract.SimpleDhtEntry.VALUE_FIELD;
 import static edu.buffalo.cse.cse486586.simpledht.model.Message.DELIMITER;
-import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.DELETE;
-import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.DELETE_ALL;
 import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.INSERT;
 import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.JOIN;
 import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.JOIN_REQUEST;
+import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.QUERY;
+import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.QUERY_ALL;
 import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.getEnumBy;
 
 public class SimpleDhtProvider extends ContentProvider {
@@ -57,9 +60,8 @@ public class SimpleDhtProvider extends ContentProvider {
     private static final String LDUMP = "@"; //Specific AVD
     private static final String GDUMP = "*"; //All AVDs
     private String nodeID = null; //Used to store hash of self
-    private String selfPort = null;
-    private int joinedAVDsCount = 1;
-    private Map<String, String> portHashTable = new TreeMap<String, String>();
+    private String selfPort = null; //Used to store the port number of the AVD
+    private int joinedAVDsCount = 1; //Used to store the number of AVD joined in
     private String[] portTable; //Storing ports in order
     private String[] hashTable; //Storing hash values of port
     private List<String> joinedAVDs = new ArrayList<String>();
@@ -67,54 +69,7 @@ public class SimpleDhtProvider extends ContentProvider {
 
     @Override
     public int delete(Uri uri, String selection, String[] selectionArgs) {
-        int rowsDeleted = 0;
-
-        // Get writeable database
-        SQLiteDatabase database = mDbHelper.getWritableDatabase();
-
-        if (joinedAVDsCount == 1) { //If there is only one node then insert data on that node
-            if (LDUMP.equals(selection) || GDUMP.equals(selection)) {
-                /*
-                 * For one node, deletion of msg is same for both -
-                 * Deletion of msgs from all nodes and
-                 * Deletion of msgs from one node
-                 */
-                rowsDeleted = database.delete(TABLE_NAME, null, null);
-            } else {
-                //Delete msg with selection key
-                selectionArgs = new String[]{selection};
-                selection = KEY_FIELD + "=?";
-                rowsDeleted = database.delete(TABLE_NAME, selection, selectionArgs);
-            }
-        } else {
-            if (LDUMP.equals(selection)) {
-                //Delete all the msgs from a particular node
-                rowsDeleted = database.delete(TABLE_NAME, null, null);
-            } else if (GDUMP.equals(selection)) {
-                for (String remotePort : portTable) {
-                    //Delete all the msgs from each node, one at a time by connecting remotely
-                    Message msg = new Message(DELETE_ALL);
-                    //TODO Need to send msg to client
-                }
-            } else {
-                try {
-                    String hashedKey = genHash(selection); //Get hash of the key to find the node where the key is situated
-                    String succPort = getSuccessorFrom(hashedKey); //Get the port from the hash value
-                    if (selfPort.equals(succPort)) { //Check if the current port is equal to self port
-                        selectionArgs = new String[]{selection};
-                        selection = KEY_FIELD + "=?";
-                        rowsDeleted = database.delete(TABLE_NAME, selection, selectionArgs);
-                    } else { //If the port is different then remotely connect to the client and delete the key and value on that node
-                        Message msg = new Message(DELETE);
-                        msg.setKey(selection);
-                        //TODO Need to send msg to client
-                    }
-                } catch (NoSuchAlgorithmException e) {
-                    Log.e(LOG_TAG, "Error in generating hash for the key " + selection);
-                }
-            }
-        }
-        return rowsDeleted;
+        return 0;
     }
 
     @Override
@@ -148,7 +103,9 @@ public class SimpleDhtProvider extends ContentProvider {
         } else {
             try {
                 String hashedKey = genHash(key); //Get hash of the key to find the node where the key is situated
+                System.out.println("Hash Key for the key " + key + " " + hashedKey);
                 String succPort = getSuccessorFrom(hashedKey); //Get the port from the hash value
+                System.out.println("Port for the hash key " + hashedKey + " " + succPort);
                 if (selfPort.equals(succPort)) { //Check if the current port is equal to self port
                     return insertInDB(uri, values);
                 } else { //If the port is different then remotely connect to the client and insert the key and value on that node
@@ -227,6 +184,7 @@ public class SimpleDhtProvider extends ContentProvider {
         // Get readable database
         SQLiteDatabase database = mDbHelper.getReadableDatabase();
         Cursor resultCursor;
+        System.out.println("Selection in query " + selection);
         if (joinedAVDsCount == 1) { //If there is only one node then insert data on that node
             if (LDUMP.equals(selection) || GDUMP.equals(selection)) {
                 /*
@@ -234,9 +192,11 @@ public class SimpleDhtProvider extends ContentProvider {
                  * Query msgs from all nodes and
                  * Query msgs from one node
                  */
+                System.out.println("Here Query LDUMP GDUMP joinedAVD 1");
                 resultCursor = database.query(TABLE_NAME, null, null, null, null, null, null);
                 return resultCursor;
             } else {
+                System.out.println("Here Query not LDUMP GDUMP joinedAVD 1");
                 //Query msg with selection key
                 selectionArgs = new String[]{selection};
                 selection = KEY_FIELD + "=?";
@@ -246,34 +206,132 @@ public class SimpleDhtProvider extends ContentProvider {
             }
         } else {
             if (LDUMP.equals(selection)) {
+                System.out.println("Here Query LDUMP not joinedAVD 1");
                 //Query all the msgs from a particular node
                 resultCursor = database.query(TABLE_NAME, null, null, null, null, null, null);
                 return resultCursor;
             } else if (GDUMP.equals(selection)) {
                 //Append messages from all the nodes
+                System.out.println("Here Query GDUMP not joinedAVD 1");
                 StringBuilder output = new StringBuilder();
                 //Query all the msgs from each node, one at a time by connecting remotely
-                //TODO to query all the nodes and get data
-
+                for (String remotePort : portTable) {
+                    try {
+                        //Get the socket with the given port number
+                        Socket socket = getSocket(getPortFromLineNumber(remotePort));
+                        try {
+                            //Create an output data stream to send QUERY message to all the nodes
+                            DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+                            //Create a QUERY_ALL message to be sent to the nodes
+                            Message msgToSend = new Message(QUERY_ALL);
+                            //Write the message on the output stream
+                            out.writeUTF(msgToSend.toString());
+                            //Flush the output stream
+                            out.flush();
+                        } catch (IOException e) {
+                            Log.e(LOG_TAG, "Error writing data to output stream in QUERY_ALL for port " + remotePort);
+                        }
+                        try {
+                            //Create an input data stream to read messages from all the nodes
+                            DataInputStream in = new DataInputStream(socket.getInputStream());
+                            //Read the message received
+                            String msgReceived = in.readUTF();
+                            System.out.println("Message Received " + msgReceived);
+                            //Append it to the output
+                            output.append(msgReceived);
+                        } catch (IOException e) {
+                            Log.e(LOG_TAG, "Error reading data from input stream in QUERY_ALL for port " + remotePort);
+                        }
+                    } catch (IOException e) {
+                        Log.e(LOG_TAG, "Error in socket creation " + remotePort);
+                    }
+                }
+                System.out.println("Output from the Query All " + output.toString());
+                //Get messages as map of key and value from the output returned from all the nodes
+                Map<String, String> allMessages = getAllMessages(output.toString());
+                display(allMessages);
+                //Make two columns for key and value
+                String colNames[] = new String[] {KEY_FIELD, VALUE_FIELD};
+                //Create Matrix Cursor for placing all the messages
+                MatrixCursor matrixCursor = new MatrixCursor(colNames, 2);
+                //Get key set from the map
+                Set<String> keys = allMessages.keySet();
+                //Iterate over all the messages and add row for each entry
+                for (String key : keys) {
+                    //Get value for the key
+                    String value = allMessages.get(key);
+                    //Create key value pair
+                    String keyValue[] = new String[] {key, value};
+                    //Add that pair to the matrix cursor
+                    matrixCursor.addRow(keyValue);
+                }
+                return matrixCursor;
             } else {
                 try {
+                    System.out.println("Here Query not LDUMP GDUMP not joinedAVD 1");
                     String hashedKey = genHash(selection); //Get hash of the key to find the node where the key is situated
+                    System.out.println("Hash Key for the key " + selection + " " + hashedKey);
                     String succPort = getSuccessorFrom(hashedKey); //Get the port from the hash value
+                    System.out.println("Port for the hash key " + hashedKey + " " + succPort);
                     if (selfPort.equals(succPort)) { //Check if the current port is equal to self port
                         //Query selection key from the database
+                        System.out.println("Here Query not LDUMP GDUMP not joinedAVD 1 self port");
                         selectionArgs = new String[]{selection};
                         selection = KEY_FIELD + "=?";
                         resultCursor = database.query(TABLE_NAME, projection, selection, selectionArgs, null, null, sortOrder);
                         resultCursor.setNotificationUri(mContentResolver, uri);
                         return resultCursor;
                     } else {
-                        //TODO to query the node and get data
+                        System.out.println("Here Query not LDUMP GDUMP not joinedAVD 1 not self port");
+                        try {
+                            //Get the socket with the given port number
+                            Socket socket = getSocket(getPortFromLineNumber(succPort));
+                            try {
+                                //Create an output data stream to send QUERY message to a particular node
+                                DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+                                //Create a QUERY message to be sent to that node
+                                Message msgToSend = new Message(QUERY);
+                                //Set the selection as key in the msg
+                                msgToSend.setKey(selection);
+                                //Write the message on the output stream
+                                out.writeUTF(msgToSend.toString());
+                                //Flush the output stream
+                                out.flush();
+                            } catch (IOException e) {
+                                Log.e(LOG_TAG, "Error writing data to output stream in QUERY for port " + succPort);
+                            }
+                            try {
+                                //Create an input data stream to read messages from a particular node
+                                DataInputStream in = new DataInputStream(socket.getInputStream());
+                                //Read the message received
+                                String msgReceived = in.readUTF();
+                                //Make two columns for key and value
+                                String colNames[] = new String[]{KEY_FIELD, VALUE_FIELD};
+                                //Create Matrix Cursor for placing all the messages from that node
+                                MatrixCursor matrixCursor = new MatrixCursor(colNames, 2);
+                                //Create key value pair
+                                String keyValue[] = {selection, msgReceived};
+                                //Add that pair to the matrix cursor
+                                matrixCursor.addRow(keyValue);
+                                return matrixCursor;
+                            } catch (IOException e) {
+                                Log.e(LOG_TAG, "Error reading data from input stream in QUERY for port " + succPort);
+                            }
+                        } catch (IOException e) {
+                            Log.e(LOG_TAG, "Error in socket creation" + succPort);
+                        }
                     }
                 } catch (NoSuchAlgorithmException e) {
                     Log.e(LOG_TAG, "Error in generating hash for the key " + selection);
                 }
             }
             return null;
+        }
+    }
+
+    private void display(Map<String, String> allMessages) {
+        for(Map.Entry<String, String> entry : allMessages.entrySet()) {
+            System.out.println("Key " + entry.getKey() + " Value " + entry.getValue());
         }
     }
 
@@ -356,19 +414,47 @@ public class SimpleDhtProvider extends ContentProvider {
                                     break;
 
                                 case QUERY:
-                                    //Query Database
+                                    SQLiteDatabase database = mDbHelper.getReadableDatabase();
+                                    String selection = msgPacket[1];
+                                    //Create an output data stream to send retrieved QUERY message back to the querying node
+                                    DataOutputStream out = new DataOutputStream(server.getOutputStream());
+                                    //Query the database with the selection key
+                                    String[] selectionArgs = new String[]{selection};
+                                    selection = KEY_FIELD + "=?";
+                                    Cursor cursor = database.query(TABLE_NAME, null, selection, selectionArgs, null, null, null);
+                                    String value = null;
+                                    //Move the cursor to the first record
+                                    if (cursor.moveToFirst()) {
+                                        //Get the value from the column
+                                        value = cursor.getString(cursor.getColumnIndex(VALUE_FIELD));
+                                    }
+                                    out.writeUTF(value);
+                                    out.flush();
+                                    cursor.close();
+                                    database.close();
                                     break;
 
                                 case QUERY_ALL:
-                                    //Query Database
-                                    break;
-
-                                case DELETE:
-                                    //Delete from Database
-                                    break;
-
-                                case DELETE_ALL:
-                                    //Delete from Database
+                                    SQLiteDatabase sqlDatabase = mDbHelper.getReadableDatabase();
+                                    //Create an output data stream to send retrieved QUERY_ALL message back to the querying node
+                                    DataOutputStream out1 = new DataOutputStream(server.getOutputStream());
+                                    //Query the database to get all the results on that node
+                                    Cursor resultCursor = sqlDatabase.query(TABLE_NAME, null, null, null, null, null, null);
+                                    //Get column count
+                                    int numColumns = resultCursor.getColumnCount();
+                                    StringBuilder output = new StringBuilder();
+                                    //Move the cursor to the -1 position
+                                    resultCursor.moveToPosition(-1);
+                                    //Iterate over all the values in the cursor
+                                    while (resultCursor.moveToNext()) {
+                                        for (int i = 0; i < numColumns; i++) {
+                                            output.append(resultCursor.getString(i)).append(DELIMITER);
+                                        }
+                                    }
+                                    out1.writeUTF(output.toString());
+                                    out1.flush();
+                                    resultCursor.close();
+                                    sqlDatabase.close();
                                     break;
 
                                 default:
@@ -434,14 +520,6 @@ public class SimpleDhtProvider extends ContentProvider {
                         }
                         break;
 
-                    case DELETE:
-                       //Delete connection
-                        break;
-
-                    case DELETE_ALL:
-                        //Delete connection
-                        break;
-
                     default:
                         throw new IllegalArgumentException("Unknown Message type" + msgType);
 
@@ -483,6 +561,7 @@ public class SimpleDhtProvider extends ContentProvider {
             } catch (NoSuchAlgorithmException e) {
                 Log.e(LOG_TAG, "Error in generating hash for the port " + msgPacket[i]);
             }
+            System.out.println("Port " + portTable[i - 1] + " hash table " + hashTable[i - 1]);
         }
     }
 
@@ -501,24 +580,16 @@ public class SimpleDhtProvider extends ContentProvider {
         return portTable[0];
     }
 
-    private void convertToPortTable(String s) {
+    //Method to separate out key and value from the message
+    private Map<String, String> getAllMessages(String s) {
+        Map<String, String> messages = new HashMap<String, String>();
         String[] msgPackets = s.split(DELIMITER);
-        for(int i = 1; i < msgPackets.length; i++) {
-            try {
-                portHashTable.put(genHash(msgPackets[i]), msgPackets[i]);
-            } catch (NoSuchAlgorithmException e) {
-                e.printStackTrace();
+        if(msgPackets.length >= 2) {
+            for (int i = 0; i < msgPackets.length; i += 2) {
+                messages.put(msgPackets[i], msgPackets[i + 1]);
             }
         }
-    }
-
-    private String getPortFromKey(String hashKey) {
-        for (Map.Entry<String, String> entry : portHashTable.entrySet()) {
-            if (entry.getKey().compareTo(hashKey) > 0) {
-                return entry.getValue();
-            }
-        }
-        return portHashTable.get(0);
+        return messages;
     }
 
 }
