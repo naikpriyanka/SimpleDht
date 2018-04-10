@@ -8,26 +8,41 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.net.Uri;
+import android.os.AsyncTask;
 import android.telephony.TelephonyManager;
 import android.util.Log;
 
+import java.io.BufferedInputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.ServerSocket;
+import java.net.Socket;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.Formatter;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 import edu.buffalo.cse.cse486586.simpledht.data.SimpleDhtDbHelper;
 import edu.buffalo.cse.cse486586.simpledht.model.Message;
+import edu.buffalo.cse.cse486586.simpledht.model.MessageType;
 
 import static android.content.Context.TELEPHONY_SERVICE;
+import static edu.buffalo.cse.cse486586.simpledht.data.SimpleDhtContract.BASE_CONTENT_URI;
 import static edu.buffalo.cse.cse486586.simpledht.data.SimpleDhtContract.SimpleDhtEntry.KEY_FIELD;
 import static edu.buffalo.cse.cse486586.simpledht.data.SimpleDhtContract.SimpleDhtEntry.TABLE_NAME;
 import static edu.buffalo.cse.cse486586.simpledht.data.SimpleDhtContract.SimpleDhtEntry.VALUE_FIELD;
+import static edu.buffalo.cse.cse486586.simpledht.model.Message.DELIMITER;
 import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.DELETE;
 import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.DELETE_ALL;
 import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.INSERT;
+import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.JOIN;
 import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.JOIN_REQUEST;
+import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.getEnumBy;
 
 public class SimpleDhtProvider extends ContentProvider {
 
@@ -37,11 +52,18 @@ public class SimpleDhtProvider extends ContentProvider {
 
     private ContentResolver mContentResolver;
 
+    private static final String LEADER_NODE = "5554";
     private static final int SERVER_PORT = 10000;
     private static final String LDUMP = "@"; //Specific AVD
     private static final String GDUMP = "*"; //All AVDs
     private String nodeID = null; //Used to store hash of self
-    private int joinedAVDsCount = 1; //Used to store the number of AVD joined in
+    private String selfPort = null;
+    private int joinedAVDsCount = 1;
+    private Map<String, String> portHashTable = new TreeMap<String, String>();
+    private String[] portTable; //Storing ports in order
+    private String[] hashTable; //Storing hash values of port
+    private List<String> joinedAVDs = new ArrayList<String>();
+    private Map<String, String> lookupTable = new TreeMap<String, String>();
 
     @Override
     public int delete(Uri uri, String selection, String[] selectionArgs) {
@@ -69,13 +91,16 @@ public class SimpleDhtProvider extends ContentProvider {
                 //Delete all the msgs from a particular node
                 rowsDeleted = database.delete(TABLE_NAME, null, null);
             } else if (GDUMP.equals(selection)) {
-                //Delete all the msgs from each node, one at a time by connecting remotely
-                Message msg = new Message(DELETE_ALL);
-                //TODO Need to send msg to client
+                for (String remotePort : portTable) {
+                    //Delete all the msgs from each node, one at a time by connecting remotely
+                    Message msg = new Message(DELETE_ALL);
+                    //TODO Need to send msg to client
+                }
             } else {
                 try {
                     String hashedKey = genHash(selection); //Get hash of the key to find the node where the key is situated
-                    if () { //TODO Check if the successor port is equal to self port
+                    String succPort = getSuccessorFrom(hashedKey); //Get the port from the hash value
+                    if (selfPort.equals(succPort)) { //Check if the current port is equal to self port
                         selectionArgs = new String[]{selection};
                         selection = KEY_FIELD + "=?";
                         rowsDeleted = database.delete(TABLE_NAME, selection, selectionArgs);
@@ -123,11 +148,12 @@ public class SimpleDhtProvider extends ContentProvider {
         } else {
             try {
                 String hashedKey = genHash(key); //Get hash of the key to find the node where the key is situated
-                if () { //TODO Check if the current port is equal to self port
+                String succPort = getSuccessorFrom(hashedKey); //Get the port from the hash value
+                if (selfPort.equals(succPort)) { //Check if the current port is equal to self port
                     return insertInDB(uri, values);
                 } else { //If the port is different then remotely connect to the client and insert the key and value on that node
                     Message msg = new Message(INSERT, key, value);
-                    //TODO need to send msg to the client
+                    new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg.toString(), succPort);
                 }
             } catch (NoSuchAlgorithmException e) {
                 Log.e(LOG_TAG, "Error in generating hash for the key " + key);
@@ -162,12 +188,17 @@ public class SimpleDhtProvider extends ContentProvider {
         //Calculate the port number that this AVD listens on
         TelephonyManager tel = (TelephonyManager) context.getSystemService(TELEPHONY_SERVICE);
         String portStr = tel.getLine1Number().substring(tel.getLine1Number().length() - 4);
+        selfPort = portStr;
         try {
             //Generate the hash for the port --> e.g. 5554 - Line Number of the AVD
             nodeID = genHash(portStr);
             System.out.println("Node ID" + nodeID);
         } catch (NoSuchAlgorithmException e) {
             Log.e(LOG_TAG, "Error in generating hash for the port " + portStr);
+        }
+        if (LEADER_NODE.equals(portStr)) {
+            joinedAVDs.add(portStr); //Add the port as joined AVD
+            lookupTable.put(nodeID, portStr); //Add the hash and the port to the lookup table
         }
         try {
             /*
@@ -177,17 +208,18 @@ public class SimpleDhtProvider extends ContentProvider {
              * AsyncTask is a simplified thread construct that Android provides.
              */
             ServerSocket serverSocket = new ServerSocket(SERVER_PORT);
-            //TODO Create server task
+            new ServerTask().executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR, serverSocket);
         } catch (IOException e) {
             Log.e(LOG_TAG, "Can't create a ServerSocket");
         }
-        //Create JOIN_REQUEST msg
         Message msg = new Message(JOIN_REQUEST);
-        //Set the port number which is joining in
         msg.setPort(portStr);
-        //Add the AVD to the Leader node
-        //TODO need to send msg to client
+        new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg.toString(), portStr);
         return true;
+    }
+
+    private String getPortFromLineNumber(String portStr) {
+        return String.valueOf((Integer.parseInt(portStr) * 2));
     }
 
     @Override
@@ -222,10 +254,12 @@ public class SimpleDhtProvider extends ContentProvider {
                 StringBuilder output = new StringBuilder();
                 //Query all the msgs from each node, one at a time by connecting remotely
                 //TODO to query all the nodes and get data
+
             } else {
                 try {
                     String hashedKey = genHash(selection); //Get hash of the key to find the node where the key is situated
-                    if() { //TODO Check if the current port is equal to self port
+                    String succPort = getSuccessorFrom(hashedKey); //Get the port from the hash value
+                    if (selfPort.equals(succPort)) { //Check if the current port is equal to self port
                         //Query selection key from the database
                         selectionArgs = new String[]{selection};
                         selection = KEY_FIELD + "=?";
@@ -258,4 +292,233 @@ public class SimpleDhtProvider extends ContentProvider {
         }
         return formatter.toString();
     }
+
+    private class ServerTask extends AsyncTask<ServerSocket, String, Void> {
+
+        @Override
+        protected Void doInBackground(ServerSocket... sockets) {
+            ServerSocket serverSocket = sockets[0];
+            /*
+             * an iterative server that can service multiple clients, though, one at a time.
+             */
+            while (true) {
+                try {
+                    if (serverSocket != null) {
+                        Socket server = serverSocket.accept();
+                        DataInputStream in = new DataInputStream(new BufferedInputStream(server.getInputStream()));
+                        //Get message from the input stream
+                        String msgReceived = in.readUTF();
+                        String[] msgPacket = msgReceived.split(DELIMITER);
+                        //Get the message type from the message string
+                        MessageType msgType = getEnumBy(msgPacket[0]);
+                        if (msgType != null) {
+                            switch (msgType) {
+                                case JOIN_REQUEST:
+                                    //Get the joined AVD
+                                    String joinedAVD = msgPacket[1];
+                                    //Add the AVD to the joined AVDs
+                                    joinedAVDs.add(joinedAVD);
+                                    try {
+                                        //Calculate the hash of joined AVD port
+                                        String hashOfJoinedAVD = genHash(joinedAVD);
+                                        //Add the hash and the joined AVD port to the table
+                                        lookupTable.put(hashOfJoinedAVD, joinedAVD);
+                                    } catch (NoSuchAlgorithmException e) {
+                                        Log.e(LOG_TAG, "Error in generating hash for the key " + joinedAVD);
+                                    }
+                                    for (String remotePort : joinedAVDs) {
+                                        //Get the successor and predecessor from the joined AVDs table
+                                        String table = getSuccessor();
+                                        try {
+                                            //Get the socket with the given port number
+                                            Socket socket = getSocket(getPortFromLineNumber(remotePort));
+                                            //Create an output data stream to send JOIN_REQUEST to all the nodes in the ring
+                                            DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+                                            out.writeUTF(table);
+                                            out.flush();
+                                        } catch (IOException e) {
+                                            Log.e(LOG_TAG, "Error writing JOIN_REQUEST on port " + remotePort);
+                                        }
+                                    }
+                                    break;
+
+                                case JOIN:
+                                    convertToTables(msgReceived);
+                                    joinedAVDsCount++;
+                                    break;
+
+                                case INSERT:
+                                    //Insert the key and the value in the database
+                                    ContentValues values = new ContentValues();
+                                    values.put(KEY_FIELD, msgPacket[1]);
+                                    values.put(VALUE_FIELD, msgPacket[2]);
+                                    mContentResolver.insert(BASE_CONTENT_URI, values);
+                                    break;
+
+                                case QUERY:
+                                    //Query Database
+                                    break;
+
+                                case QUERY_ALL:
+                                    //Query Database
+                                    break;
+
+                                case DELETE:
+                                    //Delete from Database
+                                    break;
+
+                                case DELETE_ALL:
+                                    //Delete from Database
+                                    break;
+
+                                default:
+                                    throw new IllegalArgumentException("Unknown Message type" + msgType);
+                            }
+                        } else {
+                            throw new IllegalArgumentException("Message type is null");
+                        }
+                    } else {
+                        Log.e(LOG_TAG, "The server socket is null");
+                    }
+                } catch (IOException e) {
+                    Log.e(LOG_TAG, "Error accepting socket" + e);
+                }
+            }
+        }
+    }
+
+    private class ClientTask extends AsyncTask<String, Void, Void> {
+        @Override
+        protected Void doInBackground(String... msgs) {
+            String[] msgPacket = msgs[0].split(DELIMITER);
+            MessageType msgType = getEnumBy(msgPacket[0]);
+            String remotePort = msgs[1];
+            if (msgType != null) {
+                switch (msgType) {
+                    case JOIN_REQUEST:
+                        // Join message
+                        System.out.println("Remote port" + remotePort);
+                        if (!LEADER_NODE.equals(remotePort)) {
+                            try {
+                                //Get the socket with the given port number
+                                Socket socket = getSocket(getPortFromLineNumber(LEADER_NODE));
+                                //Create an output data stream to send JOIN message with AVD that is joining in
+                                DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+                                //Create JOIN msg with the port that is joining in
+                                Message msgToSend = new Message(JOIN_REQUEST);
+                                msgToSend.setPort(remotePort);
+                                //Write msg on the output stream
+                                out.writeUTF(msgToSend.toString());
+                                //Flush the output stream
+                                out.flush();
+                            } catch (IOException e) {
+                                Log.e(LOG_TAG, "Error in writing JOIN on port " + LEADER_NODE);
+                            }
+                        }
+                        break;
+
+                    case INSERT:
+                        try {
+                            //Get the socket with the given port number
+                            Socket socket = getSocket(getPortFromLineNumber(remotePort));
+                            //Create an output data stream to send INSERT message to a particular node
+                            DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+                            //Create INSERT msg with key and value
+                            Message msgToSend = new Message(INSERT, msgPacket[1], msgPacket[2]);
+                            //Write msg on the output stream
+                            out.writeUTF(msgToSend.toString());
+                            //Flush the output stream
+                            out.flush();
+                        } catch (IOException e) {
+                            Log.e(LOG_TAG, "Error in writing INSERT on port " + remotePort);
+                        }
+                        break;
+
+                    case DELETE:
+                       //Delete connection
+                        break;
+
+                    case DELETE_ALL:
+                        //Delete connection
+                        break;
+
+                    default:
+                        throw new IllegalArgumentException("Unknown Message type" + msgType);
+
+                }
+            } else {
+                throw new IllegalArgumentException("Message type is null");
+            }
+            return null;
+        }
+    }
+
+    private Socket getSocket(String remotePort) throws IOException {
+        Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(remotePort));
+        socket.setTcpNoDelay(true);
+        socket.setSoTimeout(1000);
+        return socket;
+    }
+
+    private String getSuccessor() {
+        List<String> sortedPorts = new ArrayList<String>(lookupTable.values());
+        StringBuilder table = new StringBuilder(JOIN.name());
+        for (String port : sortedPorts) {
+            table.append(DELIMITER).append(port);
+        }
+        System.out.println("Table contents" + table.toString());
+        return table.toString();
+    }
+
+    //Method to convert the message received to a table with port and their hash values
+    private void convertToTables(String s) {
+        String[] msgPacket = s.split(DELIMITER);
+        int n = msgPacket.length;
+        portTable = new String[n - 1];
+        hashTable = new String[n - 1];
+        for(int i = 1; i < n; i++) {
+            portTable[i - 1] = msgPacket[i];
+            try {
+                hashTable[i - 1] = genHash(msgPacket[i]);
+            } catch (NoSuchAlgorithmException e) {
+                Log.e(LOG_TAG, "Error in generating hash for the port " + msgPacket[i]);
+            }
+        }
+    }
+
+    //Method to get the successor from the hash value of the port
+    private String getSuccessorFrom(String hashKey) {
+        for (int i = 0; i < portTable.length; i++) {
+            if (hashTable[i].compareTo(hashKey) > 0) { //Compare the hash values to get the port with greater value
+                return portTable[i];
+            }
+        }
+        /*
+         * If the value greater than the hash is not found
+         * then either the key hash greater than hash of last node in the ring
+         * or the key hash less than hash of first node in the ring
+         */
+        return portTable[0];
+    }
+
+    private void convertToPortTable(String s) {
+        String[] msgPackets = s.split(DELIMITER);
+        for(int i = 1; i < msgPackets.length; i++) {
+            try {
+                portHashTable.put(genHash(msgPackets[i]), msgPackets[i]);
+            } catch (NoSuchAlgorithmException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    private String getPortFromKey(String hashKey) {
+        for (Map.Entry<String, String> entry : portHashTable.entrySet()) {
+            if (entry.getKey().compareTo(hashKey) > 0) {
+                return entry.getValue();
+            }
+        }
+        return portHashTable.get(0);
+    }
+
 }
