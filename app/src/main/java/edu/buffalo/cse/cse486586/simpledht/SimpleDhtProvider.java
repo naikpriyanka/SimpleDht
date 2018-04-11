@@ -27,7 +27,6 @@ import java.util.Formatter;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.TreeMap;
 
 import edu.buffalo.cse.cse486586.simpledht.data.SimpleDhtDbHelper;
@@ -49,6 +48,11 @@ import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.QUERY;
 import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.QUERY_ALL;
 import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.getEnumBy;
 
+/*
+ * Reference: Simple Chord Algorithm - https://pdos.csail.mit.edu/papers/chord:sigcomm01/chord_sigcomm.pdf
+ * Reference: Indranil Gupta - https://www.youtube.com/watch?v=q29szpcnorA&list=PLFd87qVsaLhOkTLvfp6MC94iFa_1c9wrU&index=31
+ */
+
 public class SimpleDhtProvider extends ContentProvider {
 
     public static final String LOG_TAG = SimpleDhtProvider.class.getSimpleName();
@@ -57,7 +61,7 @@ public class SimpleDhtProvider extends ContentProvider {
 
     private ContentResolver mContentResolver;
 
-    private static final String LEADER_NODE = "5554";
+    private static final String LEADER_NODE = "5554"; //Node where all joins will take place
     private static final int SERVER_PORT = 10000;
     private static final String LDUMP = "@"; //Specific AVD
     private static final String GDUMP = "*"; //All AVDs
@@ -66,8 +70,11 @@ public class SimpleDhtProvider extends ContentProvider {
     private int joinedAVDsCount = 1; //Used to store the number of AVD joined in
     private String[] portTable; //Storing ports in order
     private String[] hashTable; //Storing hash values of port
-    private List<String> joinedAVDs = new ArrayList<String>();
-    private Map<String, String> lookupTable = new TreeMap<String, String>();
+    private List<String> joinedAVDs = new ArrayList<String>(); //List of joined AVDs
+    private Map<String, String> lookupTable = new TreeMap<String, String>(); //Map sorted on hash value of the port
+
+    //Make two columns for key and value
+    private static final String COLUMN_NAMES[] = new String[] {KEY_FIELD, VALUE_FIELD};
 
     @Override
     public int delete(Uri uri, String selection, String[] selectionArgs) {
@@ -76,7 +83,10 @@ public class SimpleDhtProvider extends ContentProvider {
         // Get writeable database
         SQLiteDatabase database = mDbHelper.getWritableDatabase();
 
-        if (joinedAVDsCount == 1) { //If there is only one node then insert data on that node
+        /*
+         * Reference: https://developer.android.com/reference/android/database/sqlite/SQLiteDatabase.html#delete(java.lang.String,%20java.lang.String,%20java.lang.String[])
+         */
+        if (joinedAVDsCount == 1) { //If there is only one node then delete data on that node
             if (LDUMP.equals(selection) || GDUMP.equals(selection)) {
                 /*
                  * For one node, deletion of msg is same for both -
@@ -103,9 +113,7 @@ public class SimpleDhtProvider extends ContentProvider {
             } else {
                 try {
                     String hashedKey = genHash(selection); //Get hash of the key to find the node where the key is situated
-                    System.out.println("Hash Key for the key " + selection + " " + hashedKey);
                     String succPort = getSuccessorFrom(hashedKey); //Get the successor port from the hash value
-                    System.out.println("Port for the hash key " + hashedKey + " " + succPort);
                     if (selfPort.equals(succPort)) { //Check if the successor port is equal to self port
                         selectionArgs = new String[]{selection};
                         selection = KEY_FIELD + "=?";
@@ -154,10 +162,8 @@ public class SimpleDhtProvider extends ContentProvider {
         } else {
             try {
                 String hashedKey = genHash(key); //Get hash of the key to find the node where the key is situated
-                System.out.println("Hash Key for the key " + key + " " + hashedKey);
                 String succPort = getSuccessorFrom(hashedKey); //Get the port from the hash value
-                System.out.println("Port for the hash key " + hashedKey + " " + succPort);
-                if (selfPort.equals(succPort)) { //Check if the current port is equal to self port
+                if (selfPort.equals(succPort)) { //Check if the successor port is equal to self port
                     return insertInDB(uri, values);
                 } else { //If the port is different then remotely connect to the client and insert the key and value on that node
                     Message msg = new Message(INSERT, key, value);
@@ -171,6 +177,9 @@ public class SimpleDhtProvider extends ContentProvider {
     }
 
     private Uri insertInDB(Uri uri, ContentValues values) {
+        /*
+         * Reference: https://developer.android.com/reference/android/database/sqlite/SQLiteDatabase.html#insertWithOnConflict(java.lang.String,%20java.lang.String,%20android.content.ContentValues,%20int)
+         */
         // Get writable database
         SQLiteDatabase database = mDbHelper.getWritableDatabase();
 
@@ -196,11 +205,11 @@ public class SimpleDhtProvider extends ContentProvider {
         //Calculate the port number that this AVD listens on
         TelephonyManager tel = (TelephonyManager) context.getSystemService(TELEPHONY_SERVICE);
         String portStr = tel.getLine1Number().substring(tel.getLine1Number().length() - 4);
+        //Store the current port in self port for future references
         selfPort = portStr;
         try {
             //Generate the hash for the port --> e.g. 5554 - Line Number of the AVD
             nodeID = genHash(portStr);
-            System.out.println("Node ID" + nodeID);
         } catch (NoSuchAlgorithmException e) {
             Log.e(LOG_TAG, "Error in generating hash for the port " + portStr);
         }
@@ -220,34 +229,33 @@ public class SimpleDhtProvider extends ContentProvider {
         } catch (IOException e) {
             Log.e(LOG_TAG, "Can't create a ServerSocket");
         }
+        //Create JOIN_REQUEST msg
         Message msg = new Message(JOIN_REQUEST);
+        //Set the port number which is joining in
         msg.setPort(portStr);
+        //Add the AVD to the Leader node
         new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg.toString(), portStr);
         return true;
     }
 
-    private String getPortFromLineNumber(String portStr) {
-        return String.valueOf((Integer.parseInt(portStr) * 2));
-    }
-
     @Override
     public Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs, String sortOrder) {
+        /*
+         * Reference: https://developer.android.com/reference/android/database/sqlite/SQLiteDatabase.html#query(java.lang.String,%20java.lang.String[],%20java.lang.String,%20java.lang.String[],%20java.lang.String,%20java.lang.String,%20java.lang.String)
+         */
         // Get readable database
         SQLiteDatabase database = mDbHelper.getReadableDatabase();
         Cursor resultCursor;
-        System.out.println("Selection in query " + selection);
-        if (joinedAVDsCount == 1) { //If there is only one node then insert data on that node
+        if (joinedAVDsCount == 1) { //If there is only one node then query data on that node
             if (LDUMP.equals(selection) || GDUMP.equals(selection)) {
                 /*
                  * For one node, query of msg is same for both -
                  * Query msgs from all nodes and
                  * Query msgs from one node
                  */
-                System.out.println("Here Query LDUMP GDUMP joinedAVD 1");
                 resultCursor = database.query(TABLE_NAME, null, null, null, null, null, null);
                 return resultCursor;
             } else {
-                System.out.println("Here Query not LDUMP GDUMP joinedAVD 1");
                 //Query msg with selection key
                 selectionArgs = new String[]{selection};
                 selection = KEY_FIELD + "=?";
@@ -257,13 +265,11 @@ public class SimpleDhtProvider extends ContentProvider {
             }
         } else {
             if (LDUMP.equals(selection)) {
-                System.out.println("Here Query LDUMP not joinedAVD 1");
                 //Query all the msgs from a particular node
                 resultCursor = database.query(TABLE_NAME, null, null, null, null, null, null);
                 return resultCursor;
             } else if (GDUMP.equals(selection)) {
                 //Append messages from all the nodes
-                System.out.println("Here Query GDUMP not joinedAVD 1");
                 StringBuilder output = new StringBuilder();
                 //Query all the msgs from each node, one at a time by connecting remotely
                 for (String remotePort : portTable) {
@@ -287,7 +293,6 @@ public class SimpleDhtProvider extends ContentProvider {
                             DataInputStream in = new DataInputStream(socket.getInputStream());
                             //Read the message received
                             String msgReceived = in.readUTF();
-                            System.out.println("Message Received " + msgReceived);
                             //Append it to the output
                             output.append(msgReceived);
                         } catch (IOException e) {
@@ -297,43 +302,34 @@ public class SimpleDhtProvider extends ContentProvider {
                         Log.e(LOG_TAG, "Error in socket creation " + remotePort);
                     }
                 }
-                System.out.println("Output from the Query All " + output.toString());
                 //Get messages as map of key and value from the output returned from all the nodes
                 Map<String, String> allMessages = getAllMessages(output.toString());
-                display(allMessages);
-                //Make two columns for key and value
-                String colNames[] = new String[] {KEY_FIELD, VALUE_FIELD};
-                //Create Matrix Cursor for placing all the messages
-                MatrixCursor matrixCursor = new MatrixCursor(colNames, 2);
-                //Get key set from the map
-                Set<String> keys = allMessages.keySet();
+                /*
+                 * Reference: https://developer.android.com/reference/android/database/MatrixCursor.html
+                 *
+                 * Create Matrix Cursor for placing all the messages
+                 */
+                MatrixCursor matrixCursor = new MatrixCursor(COLUMN_NAMES);
                 //Iterate over all the messages and add row for each entry
-                for (String key : keys) {
-                    //Get value for the key
-                    String value = allMessages.get(key);
+                for (Map.Entry<String, String> entry : allMessages.entrySet()) {
                     //Create key value pair
-                    String keyValue[] = new String[] {key, value};
+                    String keyValue[] = new String[] {entry.getKey(), entry.getValue()};
                     //Add that pair to the matrix cursor
                     matrixCursor.addRow(keyValue);
                 }
                 return matrixCursor;
             } else {
                 try {
-                    System.out.println("Here Query not LDUMP GDUMP not joinedAVD 1");
                     String hashedKey = genHash(selection); //Get hash of the key to find the node where the key is situated
-                    System.out.println("Hash Key for the key " + selection + " " + hashedKey);
                     String succPort = getSuccessorFrom(hashedKey); //Get the port from the hash value
-                    System.out.println("Port for the hash key " + hashedKey + " " + succPort);
-                    if (selfPort.equals(succPort)) { //Check if the current port is equal to self port
+                    if (selfPort.equals(succPort)) { //Check if the successor port is equal to self port
                         //Query selection key from the database
-                        System.out.println("Here Query not LDUMP GDUMP not joinedAVD 1 self port");
                         selectionArgs = new String[]{selection};
                         selection = KEY_FIELD + "=?";
                         resultCursor = database.query(TABLE_NAME, projection, selection, selectionArgs, null, null, sortOrder);
                         resultCursor.setNotificationUri(mContentResolver, uri);
                         return resultCursor;
                     } else {
-                        System.out.println("Here Query not LDUMP GDUMP not joinedAVD 1 not self port");
                         try {
                             //Get the socket with the given port number
                             Socket socket = getSocket(getPortFromLineNumber(succPort));
@@ -356,10 +352,8 @@ public class SimpleDhtProvider extends ContentProvider {
                                 DataInputStream in = new DataInputStream(socket.getInputStream());
                                 //Read the message received
                                 String msgReceived = in.readUTF();
-                                //Make two columns for key and value
-                                String colNames[] = new String[]{KEY_FIELD, VALUE_FIELD};
                                 //Create Matrix Cursor for placing all the messages from that node
-                                MatrixCursor matrixCursor = new MatrixCursor(colNames, 2);
+                                MatrixCursor matrixCursor = new MatrixCursor(COLUMN_NAMES);
                                 //Create key value pair
                                 String keyValue[] = {selection, msgReceived};
                                 //Add that pair to the matrix cursor
@@ -377,12 +371,6 @@ public class SimpleDhtProvider extends ContentProvider {
                 }
             }
             return null;
-        }
-    }
-
-    private void display(Map<String, String> allMessages) {
-        for(Map.Entry<String, String> entry : allMessages.entrySet()) {
-            System.out.println("Key " + entry.getKey() + " Value " + entry.getValue());
         }
     }
 
@@ -423,7 +411,7 @@ public class SimpleDhtProvider extends ContentProvider {
                         if (msgType != null) {
                             switch (msgType) {
                                 case JOIN_REQUEST:
-                                    //Get the joined AVD
+                                    //Get the joined AVD from the message
                                     String joinedAVD = msgPacket[1];
                                     //Add the AVD to the joined AVDs
                                     joinedAVDs.add(joinedAVD);
@@ -435,8 +423,9 @@ public class SimpleDhtProvider extends ContentProvider {
                                     } catch (NoSuchAlgorithmException e) {
                                         Log.e(LOG_TAG, "Error in generating hash for the key " + joinedAVD);
                                     }
+                                    //Notify and update the port and hash table of each node
                                     for (String remotePort : joinedAVDs) {
-                                        //Get the successor and predecessor from the joined AVDs table
+                                        //Get the successor from the joined AVDs table
                                         String table = getSuccessor();
                                         try {
                                             //Get the socket with the given port number
@@ -452,7 +441,9 @@ public class SimpleDhtProvider extends ContentProvider {
                                     break;
 
                                 case JOIN:
+                                    //Convert the msg received to port and hash table for finding the successor of the node
                                     convertToTables(msgReceived);
+                                    //Update the count of joined AVDs
                                     joinedAVDsCount++;
                                     break;
 
@@ -474,7 +465,11 @@ public class SimpleDhtProvider extends ContentProvider {
                                     selection = KEY_FIELD + "=?";
                                     Cursor cursor = database.query(TABLE_NAME, null, selection, selectionArgs, null, null, null);
                                     String value = null;
-                                    //Move the cursor to the first record
+                                    /*
+                                     * Move the cursor to the first record
+                                     *
+                                     * Reference: https://stackoverflow.com/questions/10723770/whats-the-best-way-to-iterate-an-android-cursor
+                                     */
                                     if (cursor.moveToFirst()) {
                                         //Get the value from the column
                                         value = cursor.getString(cursor.getColumnIndex(VALUE_FIELD));
@@ -491,10 +486,22 @@ public class SimpleDhtProvider extends ContentProvider {
                                     DataOutputStream out1 = new DataOutputStream(server.getOutputStream());
                                     //Query the database to get all the results on that node
                                     Cursor resultCursor = sqlDatabase.query(TABLE_NAME, null, null, null, null, null, null);
-                                    //Get column count
+                                    /*
+                                     * Reference: https://developer.android.com/reference/android/database/MatrixCursor.html#getCount()
+                                     *
+                                     * Get column count
+                                     */
                                     int numColumns = resultCursor.getColumnCount();
                                     StringBuilder output = new StringBuilder();
-                                    //Move the cursor to the -1 position
+                                    /*
+                                     * Move the cursor to the -1 position
+                                     * In order to iterate over the result cursor returned from the sql database query
+                                     * I move the cursor with -1 position so that I can directly use the function moveToNext
+                                     * in the while loop
+                                     *
+                                     * Reference: https://developer.android.com/reference/android/database/Cursor.html
+                                     * Reference: https://stackoverflow.com/questions/10723770/whats-the-best-way-to-iterate-an-android-cursor
+                                     */
                                     resultCursor.moveToPosition(-1);
                                     //Iterate over all the values in the cursor
                                     while (resultCursor.moveToNext()) {
@@ -542,10 +549,10 @@ public class SimpleDhtProvider extends ContentProvider {
                 switch (msgType) {
                     case JOIN_REQUEST:
                         // Join message
-                        System.out.println("Remote port" + remotePort);
                         if (!LEADER_NODE.equals(remotePort)) {
                             try {
                                 //Get the socket with the given port number
+                                //Join message to be taken care by the leader node
                                 Socket socket = getSocket(getPortFromLineNumber(LEADER_NODE));
                                 //Create an output data stream to send JOIN message with AVD that is joining in
                                 DataOutputStream out = new DataOutputStream(socket.getOutputStream());
@@ -625,6 +632,7 @@ public class SimpleDhtProvider extends ContentProvider {
         }
     }
 
+    //Method to create socket for the given port
     private Socket getSocket(String remotePort) throws IOException {
         Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(remotePort));
         socket.setTcpNoDelay(true);
@@ -632,13 +640,18 @@ public class SimpleDhtProvider extends ContentProvider {
         return socket;
     }
 
+    //Method to get the TCP port from the Line Number
+    private String getPortFromLineNumber(String portStr) {
+        return String.valueOf((Integer.parseInt(portStr) * 2));
+    }
+
+    //Method to get the list of ports sorted by hash value
     private String getSuccessor() {
         List<String> sortedPorts = new ArrayList<String>(lookupTable.values());
         StringBuilder table = new StringBuilder(JOIN.name());
         for (String port : sortedPorts) {
             table.append(DELIMITER).append(port);
         }
-        System.out.println("Table contents" + table.toString());
         return table.toString();
     }
 
@@ -655,14 +668,28 @@ public class SimpleDhtProvider extends ContentProvider {
             } catch (NoSuchAlgorithmException e) {
                 Log.e(LOG_TAG, "Error in generating hash for the port " + msgPacket[i]);
             }
-            System.out.println("Port " + portTable[i - 1] + " hash table " + hashTable[i - 1]);
         }
     }
 
-    //Method to get the successor from the hash value of the port
+    /*
+     * Method to get the successor from the hash value of the port
+     *
+     * Pros:
+     * 1. Easy to implement and maintain
+     * 2. Easy to break the loop around the chord ring than maintaining two pointer successor and predecessor,
+     * since the iteration will go once the hash table and if not found then will return the first port
+     * otherwise the next successor in the ring
+     *
+     * Cons:
+     * Every time I will have to go through the loop to get the successor of the port
+     * So the time complexity of the algorithm becomes O(n) where n is the number of ports in the chord ring
+     * Since I'm iterating from 0 to the number of AVDs in chord
+     * The worst case will be go till the end and if the greater hash value is not found then return the first
+     * Maintaining two pointers, for each node will give the successor in O(1) time for best case and O(n) in worst case
+     */
     private String getSuccessorFrom(String hashKey) {
         for (int i = 0; i < portTable.length; i++) {
-            if (hashTable[i].compareTo(hashKey) > 0) { //Compare the hash values to get the port with greater value
+            if (hashTable[i].compareTo(hashKey) > 0) { //Compare the hash values to get the successor port
                 return portTable[i];
             }
         }
