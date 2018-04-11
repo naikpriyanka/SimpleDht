@@ -40,6 +40,8 @@ import static edu.buffalo.cse.cse486586.simpledht.data.SimpleDhtContract.SimpleD
 import static edu.buffalo.cse.cse486586.simpledht.data.SimpleDhtContract.SimpleDhtEntry.TABLE_NAME;
 import static edu.buffalo.cse.cse486586.simpledht.data.SimpleDhtContract.SimpleDhtEntry.VALUE_FIELD;
 import static edu.buffalo.cse.cse486586.simpledht.model.Message.DELIMITER;
+import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.DELETE;
+import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.DELETE_ALL;
 import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.INSERT;
 import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.JOIN;
 import static edu.buffalo.cse.cse486586.simpledht.model.MessageType.JOIN_REQUEST;
@@ -69,12 +71,56 @@ public class SimpleDhtProvider extends ContentProvider {
 
     @Override
     public int delete(Uri uri, String selection, String[] selectionArgs) {
+        int rowsDeleted = 0;
+
         // Get writeable database
         SQLiteDatabase database = mDbHelper.getWritableDatabase();
-        //Code for deletion with the given selection key
-        selectionArgs = new String[]{selection};
-        selection = KEY_FIELD + "=?";
-        return database.delete(TABLE_NAME, selection, selectionArgs);
+
+        if (joinedAVDsCount == 1) { //If there is only one node then insert data on that node
+            if (LDUMP.equals(selection) || GDUMP.equals(selection)) {
+                /*
+                 * For one node, deletion of msg is same for both -
+                 * Deletion of msgs from all nodes and
+                 * Deletion of msgs from one node
+                 */
+                rowsDeleted = database.delete(TABLE_NAME, null, null);
+            } else {
+                //Delete msg with selection key
+                selectionArgs = new String[]{selection};
+                selection = KEY_FIELD + "=?";
+                rowsDeleted = database.delete(TABLE_NAME, selection, selectionArgs);
+            }
+        } else {
+            if (LDUMP.equals(selection)) {
+                //Delete all the msgs from a particular node
+                rowsDeleted = database.delete(TABLE_NAME, null, null);
+            } else if (GDUMP.equals(selection)) {
+                for (String remotePort : portTable) {
+                    //Delete all the msgs from each node, one at a time by connecting remotely
+                    Message msg = new Message(DELETE_ALL);
+                    new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg.toString(), remotePort);
+                }
+            } else {
+                try {
+                    String hashedKey = genHash(selection); //Get hash of the key to find the node where the key is situated
+                    System.out.println("Hash Key for the key " + selection + " " + hashedKey);
+                    String succPort = getSuccessorFrom(hashedKey); //Get the successor port from the hash value
+                    System.out.println("Port for the hash key " + hashedKey + " " + succPort);
+                    if (selfPort.equals(succPort)) { //Check if the successor port is equal to self port
+                        selectionArgs = new String[]{selection};
+                        selection = KEY_FIELD + "=?";
+                        rowsDeleted = database.delete(TABLE_NAME, selection, selectionArgs);
+                    } else { //If the port is different then remotely connect to the client and delete the key and value on that node
+                        Message msg = new Message(DELETE);
+                        msg.setKey(selection);
+                        new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg.toString(), succPort);
+                    }
+                } catch (NoSuchAlgorithmException e) {
+                    Log.e(LOG_TAG, "Error in generating hash for the key " + selection);
+                }
+            }
+        }
+        return rowsDeleted;
     }
 
     @Override
@@ -462,6 +508,14 @@ public class SimpleDhtProvider extends ContentProvider {
                                     sqlDatabase.close();
                                     break;
 
+                                case DELETE:
+                                    mContentResolver.delete(BASE_CONTENT_URI, msgPacket[1], null);
+                                    break;
+
+                                case DELETE_ALL:
+                                    mContentResolver.delete(BASE_CONTENT_URI, null, null);
+                                    break;
+
                                 default:
                                     throw new IllegalArgumentException("Unknown Message type" + msgType);
                             }
@@ -522,6 +576,41 @@ public class SimpleDhtProvider extends ContentProvider {
                             out.flush();
                         } catch (IOException e) {
                             Log.e(LOG_TAG, "Error in writing INSERT on port " + remotePort);
+                        }
+                        break;
+
+                    case DELETE:
+                        try {
+                            //Get the socket with the given port number
+                            Socket socket = getSocket(getPortFromLineNumber(remotePort));
+                            //Create an output data stream to send DELETE message to a particular node
+                            DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+                            //Create DELETE msg with key to delete all the message from that node
+                            Message msgToSend = new Message(DELETE);
+                            msgToSend.setKey(msgPacket[1]);
+                            //Write the msg on the output stream
+                            out.writeUTF(msgToSend.toString());
+                            //Flush the output stream
+                            out.flush();
+                        } catch (IOException e) {
+                            Log.e(LOG_TAG, "Error in writing DELETE on port " + remotePort);
+                        }
+                        break;
+
+                    case DELETE_ALL:
+                        try {
+                            //Get the socket with the given port number
+                            Socket socket = getSocket(getPortFromLineNumber(remotePort));
+                            //Create an output data stream to send DELETE_ALL message to a particular node
+                            DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+                            //Create DELETE msg with key to delete all the message from all the nodes node
+                            Message msgToSend = new Message(DELETE_ALL);
+                            //Write the msg on the output stream
+                            out.writeUTF(msgToSend.toString());
+                            //Flush the output stream
+                            out.flush();
+                        } catch (IOException e) {
+                            Log.e(LOG_TAG, "Error in writing DELETE_ALL on port " + remotePort);
                         }
                         break;
 
